@@ -1,0 +1,5 @@
+{
+  "name": "E-Comm Mimic AI",
+  "description": "A cross-border e-commerce tool that analyzes competitor assets (images/videos) and generates optimized marketing visuals for your specific products using Gemini AI.",
+  "requestFramePermissions": []
+}
