@@ -1,10 +1,135 @@
-import { GoogleGenAI, Type } from "@google/genai";
 import { AnalysisResult, ProductDetails } from "../types";
 
-// Initialize Gemini Client
-// @ts-ignore
-const apiKey = process.env.API_KEY || '';
-const ai = new GoogleGenAI({ apiKey });
+const OPENROUTER_API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY || "";
+const OPENROUTER_BASE_URL = (import.meta.env.VITE_OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+const OPENROUTER_TEXT_MODEL = import.meta.env.VITE_OPENROUTER_TEXT_MODEL || "openai/gpt-4o-mini";
+const OPENROUTER_IMAGE_MODEL = import.meta.env.VITE_OPENROUTER_IMAGE_MODEL || "bytedance-seed/seedream-4.5";
+
+const toDataUri = (base64: string, mimeType?: string): string => {
+  const safeMime = mimeType || "image/png";
+  return `data:${safeMime};base64,${base64}`;
+};
+
+const unwrapImageLike = (imageLike: any): string | null => {
+  if (!imageLike) return null;
+  if (typeof imageLike === "string") return imageLike;
+
+  const directUrl = imageLike.url || imageLike.image_url?.url || imageLike.image_url;
+  if (typeof directUrl === "string" && directUrl.length > 0) return directUrl;
+
+  const base64 = imageLike.b64_json || imageLike.imageBytes || imageLike.image?.imageBytes;
+  if (typeof base64 === "string" && base64.length > 0) {
+    return toDataUri(base64, imageLike.mimeType || imageLike.image?.mimeType);
+  }
+
+  return null;
+};
+
+const extractTextContent = (content: unknown): string => {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .map((part: any) => {
+      if (typeof part === "string") return part;
+      if (typeof part?.text === "string") return part.text;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+};
+
+const extractGeneratedImageUrl = (response: any): string | null => {
+  const directData = response?.data?.[0];
+  const fromDirectData = unwrapImageLike(directData);
+  if (fromDirectData) return fromDirectData;
+
+  const choices = response?.choices;
+  if (Array.isArray(choices)) {
+    for (const choice of choices) {
+      const message = choice?.message || {};
+
+      if (Array.isArray(message.images)) {
+        for (const imageLike of message.images) {
+          const extracted = unwrapImageLike(imageLike);
+          if (extracted) return extracted;
+        }
+      }
+
+      const content = message.content;
+      if (Array.isArray(content)) {
+        for (const part of content) {
+          if (part?.type === "image_url" || part?.type === "output_image" || part?.type === "image") {
+            const extracted = unwrapImageLike(part);
+            if (extracted) return extracted;
+          }
+        }
+      }
+
+      const asText = extractTextContent(content);
+      const dataUriMatch = asText.match(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/);
+      if (dataUriMatch?.[0]) return dataUriMatch[0];
+
+      const markdownImageMatch = asText.match(/!\[[^\]]*]\((https?:\/\/[^)\s]+)\)/);
+      if (markdownImageMatch?.[1]) return markdownImageMatch[1];
+      const plainImageUrlMatch = asText.match(/https?:\/\/[^\s)]+(?:png|jpg|jpeg|webp|gif)(?:\?[^\s)]*)?/i);
+      if (plainImageUrlMatch?.[0]) return plainImageUrlMatch[0];
+    }
+  }
+
+  const fallbackImages = response?.images;
+  if (Array.isArray(fallbackImages)) {
+    for (const imageLike of fallbackImages) {
+      const extracted = unwrapImageLike(imageLike);
+      if (extracted) return extracted;
+    }
+  }
+
+  return null;
+};
+
+const extractErrorMessage = (payload: any): string => {
+  return (
+    payload?.error?.message ||
+    payload?.message ||
+    payload?.detail ||
+    payload?.errors?.[0]?.message ||
+    "Unknown OpenRouter error"
+  );
+};
+
+const parseJsonObjectFromText = (text: string): any => {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced?.[1] || trimmed;
+  return JSON.parse(candidate);
+};
+
+const callOpenRouter = async (payload: any): Promise<any> => {
+  if (!OPENROUTER_API_KEY) {
+    throw new Error("Missing OpenRouter API key. Please set VITE_OPENROUTER_API_KEY in .env.local");
+  }
+
+  const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+      "HTTP-Referer": window.location.origin,
+      "X-Title": "shopping-v2"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`OpenRouter request failed (${response.status}): ${extractErrorMessage(json)}`);
+  }
+
+  return json;
+};
 
 /**
  * Helper to convert File to Base64
@@ -28,7 +153,7 @@ export const fileToGenerativePart = async (file: File): Promise<{ inlineData: { 
 
 /**
  * Analyzes a competitor's asset (image or video) and maps it to the user's product.
- * Uses gemini-3-pro-preview for superior reasoning and JSON formatting.
+ * Uses OpenRouter text/vision model for reasoning and JSON output.
  */
 export const analyzeCompetitorAsset = async (
   file: File,
@@ -57,36 +182,26 @@ export const analyzeCompetitorAsset = async (
   `;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview",
-      contents: {
-        parts: [
-          mediaPart,
-          { text: prompt }
-        ]
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            visualStyle: { type: Type.STRING, description: "Description of the visual style and tone" },
-            sellingPoints: { type: Type.STRING, description: "Key selling points highlighted visually" },
-            composition: { type: Type.STRING, description: "Notes on composition, framing, and lighting" },
-            lightingAndMood: { type: Type.STRING, description: "Details about lighting setup and emotional mood" },
-            suggestedPrompt: { type: Type.STRING, description: "The optimized prompt to generate a new image for MY product" },
-            adCopy: { type: Type.STRING, description: "Short advertising copy text" }
-          },
-          required: ["visualStyle", "sellingPoints", "composition", "lightingAndMood", "suggestedPrompt", "adCopy"]
+    const response = await callOpenRouter({
+      model: OPENROUTER_TEXT_MODEL,
+      temperature: 0.2,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt + "\nReturn ONLY valid JSON. No markdown, no extra text." },
+            { type: "image_url", image_url: { url: toDataUri(mediaPart.inlineData.data, mediaPart.inlineData.mimeType) } }
+          ]
         }
-      }
+      ]
     });
 
-    if (!response.text) {
-      throw new Error("No response from Gemini.");
+    const content = extractTextContent(response?.choices?.[0]?.message?.content);
+    if (!content) {
+      throw new Error("No analysis content returned from OpenRouter.");
     }
 
-    return JSON.parse(response.text) as AnalysisResult;
+    return parseJsonObjectFromText(content) as AnalysisResult;
 
   } catch (error) {
     console.error("Error analyzing asset:", error);
@@ -96,36 +211,26 @@ export const analyzeCompetitorAsset = async (
 
 /**
  * Generates a new image based on the suggested prompt.
- * Uses gemini-2.5-flash-image for image generation.
+ * Uses OpenRouter image model for generation.
  */
 export const generateMarketingImage = async (prompt: string): Promise<string> => {
   try {
-    // We use gemini-2.5-flash-image which supports text-to-image generation
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-image",
-      contents: {
-        parts: [
-          { text: prompt }
-        ]
-      },
-      config: {
-         // Using default config for 1:1 aspect ratio, can be adjusted if needed
-         // imageConfig: { aspectRatio: "1:1" } 
-      }
+    const response = await callOpenRouter({
+      model: OPENROUTER_IMAGE_MODEL,
+      modalities: ["image"],
+      messages: [
+        {
+          role: "user",
+          content: prompt
+        }
+      ]
     });
 
-    // Extract image from response
-    // The response can contain multiple parts, we look for inlineData
-    const parts = response.candidates?.[0]?.content?.parts;
-    if (!parts) throw new Error("No content generated");
-
-    for (const part of parts) {
-        if (part.inlineData) {
-            return `data:image/png;base64,${part.inlineData.data}`;
-        }
+    const imageUrl = extractGeneratedImageUrl(response);
+    if (!imageUrl) {
+      throw new Error("Image generation returned no usable image data. Please verify your selected OpenRouter image model supports image output on chat/completions.");
     }
-
-    throw new Error("No image data found in response");
+    return imageUrl;
 
   } catch (error) {
     console.error("Error generating image:", error);

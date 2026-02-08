@@ -1,12 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { GeneratedAsset } from '../types';
-import { Download, Copy, Clock, Image as ImageIcon } from 'lucide-react';
+import { Download, Clock, Image as ImageIcon } from 'lucide-react';
 
 interface GeneratedGalleryProps {
   assets: GeneratedAsset[];
 }
 
 export const GeneratedGallery: React.FC<GeneratedGalleryProps> = ({ assets }) => {
+  const [failedImageIds, setFailedImageIds] = useState<Set<string>>(new Set());
+
   const handleDownload = (url: string, id: string) => {
     const link = document.createElement('a');
     link.href = url;
@@ -33,11 +35,25 @@ export const GeneratedGallery: React.FC<GeneratedGalleryProps> = ({ assets }) =>
       {assets.map((asset) => (
         <div key={asset.id} className="group relative bg-white rounded-xl shadow-sm border border-red-100 overflow-hidden transition-all hover:shadow-lg hover:border-red-200 hover:-translate-y-1">
           <div className="aspect-square w-full bg-slate-100 relative overflow-hidden">
-             <img 
-               src={asset.imageUrl} 
-               alt="Generated Asset" 
-               className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
-             />
+             {!failedImageIds.has(asset.id) ? (
+               <img
+                 src={asset.imageUrl}
+                 alt="Generated Asset"
+                 className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+                 onError={() =>
+                   setFailedImageIds((prev) => {
+                     const next = new Set(prev);
+                     next.add(asset.id);
+                     return next;
+                   })
+                 }
+               />
+             ) : (
+               <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 gap-2">
+                 <ImageIcon className="w-10 h-10" />
+                 <p className="text-xs">Preview unavailable</p>
+               </div>
+             )}
              <div className="absolute inset-0 bg-red-900/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 backdrop-blur-[1px]">
                 <button 
                   onClick={() => handleDownload(asset.imageUrl, asset.id)}

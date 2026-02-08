@@ -106,7 +106,7 @@ const App: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           
           {/* LEFT COLUMN: Inputs - Sticky for better UX */}
-          <div className="lg:col-span-4 space-y-8 lg:sticky lg:top-24">
+          <div className="lg:col-span-4 space-y-8 self-start">
             
             {/* Step 1: File Upload */}
             <section>

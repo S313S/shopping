@@ -15,6 +15,16 @@ View your app in AI Studio: https://ai.studio/apps/drive/12dgBuGtZr9LUsVFxvu8vsy
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Set OpenRouter envs in [.env.local](.env.local):
+
+   ```bash
+   VITE_OPENROUTER_API_KEY=your_openrouter_key
+   VITE_OPENROUTER_IMAGE_MODEL=bytedance-seed/seedream-4.5
+   VITE_OPENROUTER_TEXT_MODEL=openai/gpt-4o-mini
+   # Optional:
+   # VITE_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+   ```
+
+   Note: this is a pure frontend app. `VITE_*` vars are exposed to browser; for production use, move API calls to backend.
 3. Run the app:
    `npm run dev`
